@@ -59,6 +59,27 @@ function _database.connect(self, opts)
         return nil, err
     end
 
+    local max_packet_size = opts.max_packet_size
+    if not max_packet_size then
+        max_packet_size = 1024 * 1024 -- default 1 MB
+    end
+    self.max_packet_size = max_packet_size
+    self.compact = opts.compact_arrays
+    local database = opts.database or ""
+    local user = opts.user or "root"
+    local pool = opts.pool
+    local host = opts.host or 'localhost'
+    local port = opts.port or 3306
+
+    if not pool then
+        pool = user .. ":" .. database .. ":" .. host .. ":" .. port
+    end
+
+    local conn_res, err = sock:connect(host, port, { pool = pool })
+    if not conn_res then
+        return nil, 'failed to connect: ' .. err
+    end
+
     return setmetatable({ sock = self.sock }, connt)
 end
 
