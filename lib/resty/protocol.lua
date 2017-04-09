@@ -48,6 +48,8 @@ local CLIENT_CAN_HANDLE_EXPIRED_PASSWORDS = 0x00400000
 local CLIENT_SESSION_TRACK = 0x00800000
 local CLIENT_DEPRECATE_EOF = 0x01000000
 
+_M.CLIENT_SSL = CLIENT_SSL
+
 local COM_QUERY = 0x03
 local COM_STMT_PREPARE = 0x16
 local COM_STMT_EXECUTE = 0x17
@@ -63,8 +65,8 @@ local function _dump(data)
     return concat(bytes, " ")
 end
 
-local function recv_packet(self)
-    local sock = self.sock
+local function recv_packet(ctx)
+    local sock = ctx.sock
 
     local data, err = sock:receive(4) --packet header
 
@@ -78,13 +80,13 @@ local function recv_packet(self)
         return nil, nil, 'receive empty packet'
     end
 
-    if pkt_len > self._max_packet_size then
+    if pkt_len > ctx.max_packet_size then
         return nil, nil, "packet size too big"
     end
 
     local seq_id, pos = conv.byte1_to_integer(data, pos) --packet sequence id
 
-    self.sequence_id = seq_id
+    ctx.sequence_id = seq_id
 
     local payload, err = sock:receive(pkt_len) --packet payload
 
@@ -106,15 +108,17 @@ local function recv_packet(self)
         return nil, nil, 'unknown packet'
 end
 
-local function send_packet(self, data)
-    local sock = self.sock
+_M.recv_packet = recv_packet
+
+local function send_packet(ctx, data)
+    local sock = ctx.sock
 
     local send_data = conv.integer_to_byte3(#data) --payload_length:int<3>
-    self.sequence_id = self.sequence_id + 1
-    send_data = send_data .. conv.integer_to_byte1(self.sequence_id) --sequence_id:int<1>
+    ctx.sequence_id = ctx.sequence_id + 1
+    send_data = send_data .. conv.integer_to_byte1(ctx.sequence_id) --sequence_id:int<1>
     send_data = send_data .. data
 
-    sock:send(send_data)
+    return sock:send(send_data)
 end
 
 local function parse_err_packet(data)
@@ -139,6 +143,8 @@ local function parse_err_packet(data)
 
     return res
 end
+
+_M.parse_err_packet = parse_err_packet
 
 local function parse_ok_packet(data)
     local pkt_header, pos = conv.byte1_to_integer(data, 1) --header:int<1>
@@ -206,6 +212,8 @@ local function parse_handshake_packet(data)
    return res
 end
 
+_M.parse_handshake_packet = parse_handshake_packet
+
 local function construct_handshake_response_packet(client)
     local data = conv.integer_to_byte4(client.capability_flags) --capability_flags:int<4>
     data = data .. conv.integer_to_byte4(client.max_packet_size) --max_packet_size:int<4>
@@ -247,6 +255,8 @@ local function construct_handshake_response_packet(client)
 
     return data
 end
+
+_M.construct_handshake_response_packet = construct_handshake_response_packet
 
 local function construct_ssl_request_packet(client)
     local data = conv.integer_to_byte4(client.capability_flags) --capability_flags:int<4>
@@ -381,3 +391,24 @@ local function parse_binary_resultset_row_packet(column_defs, data)
 
     return res
 end
+
+local function compute_token(password, scramble)
+    if password == "" then
+        return ""
+    end
+
+    local stage1 = sha1(password)
+    local stage2 = sha1(stage1)
+    local stage3 = sha1(scramble .. stage2)
+    local n = #stage1
+    local bytes = new_tab(n, 0)
+    for i = 1, n do
+         bytes[i] = strchar(bxor(strbyte(stage3, i), strbyte(stage1, i)))
+    end
+
+    return concat(bytes)
+end
+
+_M.compute_token = compute_token
+
+return _M
