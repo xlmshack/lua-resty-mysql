@@ -1,26 +1,27 @@
-﻿local bit = require "bit"
+local bit = require("bit")
+local sha1 = require("sha1")
 local sub = string.sub
-local tcp = ngx.socket.tcp
 local strbyte = string.byte
 local strchar = string.char
 local strfind = string.find
 local format = string.format
 local strrep = string.rep
-local null = ngx.null
+local null = 0xfb
 local band = bit.band
 local bxor = bit.bxor
 local bor = bit.bor
 local lshift = bit.lshift
 local rshift = bit.rshift
 local tohex = bit.tohex
-local sha1 = ngx.sha1_bin
+--local sha1 = ngx.sha1_bin
 local concat = table.concat
 local unpack = unpack
 local setmetatable = setmetatable
 local error = error
 local tonumber = tonumber
 local conv = require('conversion')
-local _M
+
+local _M = { _VERSION = '0.19' }
 
 local CLIENT_LONG_PASSWORD = 0x00000001
 local CLIENT_FOUND_ROWS = 0x00000002
@@ -49,12 +50,22 @@ local CLIENT_SESSION_TRACK = 0x00800000
 local CLIENT_DEPRECATE_EOF = 0x01000000
 
 _M.CLIENT_SSL = CLIENT_SSL
+_M.CLIENT_DEPRECATE_EOF = CLIENT_DEPRECATE_EOF
+
+local SERVER_MORE_RESULTS_EXISTS =  0x0008
+
+_M.SERVER_MORE_RESULTS_EXISTS = SERVER_MORE_RESULTS_EXISTS
 
 local COM_QUERY = 0x03
 local COM_STMT_PREPARE = 0x16
 local COM_STMT_EXECUTE = 0x17
 
 local CURSOR_TYPE_NO_CURSOR = 0x00
+
+local ok, new_tab = pcall(require, "table.new")
+if not ok then
+    new_tab = function (narr, nrec) return {} end
+end
 
 local function _dump(data)
     local len = #data
@@ -97,15 +108,16 @@ local function recv_packet(ctx)
     local payload_header, pos = conv.byte1_to_integer(payload, 1)
 
     if payload_header == 0x00 then
-        return 'OK', data
+        return 'OK', payload
     elseif payload_header == 0xff then
-        return 'ERR', data
+        return 'ERR', payload
     elseif payload_header == 0xfe then
-        return 'EOF', data
+        return 'EOF', payload
     elseif payload_header < 0xfb then
-        return 'DATA', data
+        return 'DATA', payload
     else
         return nil, nil, 'unknown packet'
+    end
 end
 
 _M.recv_packet = recv_packet
@@ -121,11 +133,13 @@ local function send_packet(ctx, data)
     return sock:send(send_data)
 end
 
+_M.send_packet = send_packet
+
 local function parse_err_packet(data)
     local pkt_header, pos = conv.byte1_to_integer(data, 1) --header:int<1>
     local error_code, pos = conv.byte2_to_integer(data, pos) --error_code:int<2>
 
-    local sql_state_marker, pos = sub(data, pos, pos) --sql_state_marker:string<1>
+    local sql_state_marker = sub(data, pos, pos) --sql_state_marker:string<1>
     pos = pos + 1
     local sql_state = nil
     if sql_state_marker == '#' then
@@ -165,6 +179,8 @@ local function parse_ok_packet(data)
     return res
 end
 
+_M.parse_ok_packet = parse_ok_packet
+
 local function parse_eof_packet(data)
     local pkt_header, pos = conv.byte1_to_integer(data, 1) --header:int<1>
     local warnings, pos = conv.byte2_to_integer(data, pos) --warnings:int<2>
@@ -178,12 +194,14 @@ local function parse_eof_packet(data)
     return res
 end
 
+_M.parse_eof_packet = parse_eof_packet
+
 local function parse_handshake_packet(data)
     local res, pos = {}
     res.protocol_ver, pos = conv.byte1_to_integer(data, 1) --protocol_version:[0a]
     res.server_ver, pos = conv.cstr_to_str(data, pos) --server_version:string<NUL>
     res.connection_id, pos = conv.byte4_to_integer(data, pos) --connection_id:int<4>
-    res.auth_plugin_data_part, pos = sub(data, pos, pos + 8 - 1) --auth-plugin-data-part-1:string<8>
+    res.auth_plugin_data_part = sub(data, pos, pos + 8 - 1) --auth-plugin-data-part-1:string<8>
     pos = pos + 8
     pos = pos + 1 --filler:[00]
     res.capability_flags, pos = conv.byte2_to_integer(data, pos) --capability_flags(lower 2 bytes):int<2>
@@ -196,8 +214,8 @@ local function parse_handshake_packet(data)
         local auth_plugin_data_part_len, pos = conv.byte1_to_integer(data, pos) --auth_plugin_data_part_len:int<1>
         pos = pos + 10 --reserved:string<10>
         if band(res.capability_flags, CLIENT_SECURE_CONNECTION) > 0 then
-            auth_plugin_data_part_len = MAX(13, auth_plugin_data_part_len - 8)
-            res.auth_plugin_data_part = res.auth_plugin_data_part .. sub(data, pos, pos + auth_plugin_data_part_len - 1) --auth_plugin_data_part_2:string<$len>
+            auth_plugin_data_part_len = 13 > auth_plugin_data_part_len - 8 and 13 or auth_plugin_data_part_len - 8
+            res.auth_plugin_data_part = res.auth_plugin_data_part .. sub(data, pos, pos + auth_plugin_data_part_len - 1 - 1) --auth_plugin_data_part_2:string<$len>, but 
             pos = pos + auth_plugin_data_part_len
         end
         if band(res.capability_flags, CLIENT_PLUGIN_AUTH) > 0 then
@@ -223,7 +241,7 @@ local function construct_handshake_response_packet(client)
     if band(client.capability_flags, CLIENT_PLUGIN_AUTH_LENENC_CLIENT_DATA) > 0 then
         data = data .. conv.integer_to_lenenc(#client.auth_response)
         data = data .. client.auth_response --auth_response:string<lenenc>
-    elseif band(client.capability_flags, CLIENT_SECURE_CONNECTION) > then
+    elseif band(client.capability_flags, CLIENT_SECURE_CONNECTION) > 0 then
         data = data .. conv.integer_to_byte1(#client.auth_response) --auth_response:int<1>
         data = data .. client.auth_response
     else
@@ -274,9 +292,13 @@ local function construct_com_query_packet(querystr)
     return send_data
 end
 
+_M.construct_com_query_packet = construct_com_query_packet
+
 local function parse_column_count_packet(data)
-    return conv.lenenc_to_integer(data)
+    return conv.lenenc_to_integer(data, 1)
 end
+
+_M.parse_column_count_packet = parse_column_count_packet
 
 local function parse_column_definition_packet(data)
     local res, pos = {}
@@ -296,14 +318,25 @@ local function parse_column_definition_packet(data)
     return res
 end
 
+_M.parse_column_definition_packet = parse_column_definition_packet
+
 local function parse_resultset_row_packet(data, column_set)
     local res, pos, i = {}, 1, 1
+    local field_value = ''
     for k,v in pairs(column_set) do
-        res[column_set[i].name], pos = conv.lenenc_str_to_str(data, pos)
+        field_value, pos = conv.lenenc_str_to_str(data, pos)
+        if conv.ProtocolTextConverters[column_set[i].type] then
+            res[column_set[i].name] = conv.ProtocolTextConverters[column_set[i].type](field_value)
+        else
+            res[column_set[i].name] = field_value
+        end
+        i = i + 1
     end
 
     return res
 end
+
+_M.parse_resultset_row_packet = parse_resultset_row_packet
 
 local function construct_com_stmt_prepare_packet(querystr)
     local send_data = conv.integer_to_byte1(COM_STMT_PREPARE)
@@ -311,6 +344,8 @@ local function construct_com_stmt_prepare_packet(querystr)
 
     return send_data
 end
+
+_M.construct_com_stmt_prepare_packet = construct_com_stmt_prepare_packet
 
 local function parse_com_stmt_prepare_ok_packet(data)
     local res, pos = {}
@@ -323,6 +358,8 @@ local function parse_com_stmt_prepare_ok_packet(data)
 
     return res
 end
+
+_M.parse_com_stmt_prepare_ok_packet = parse_com_stmt_prepare_ok_packet
 
 local function construct_com_stmt_execute_packet(stmt, new_params)
     local send_data = conv.integer_to_byte1(COM_STMT_EXECUTE)
@@ -370,6 +407,8 @@ local function construct_com_stmt_execute_packet(stmt, new_params)
     return send_data
 end
 
+_M.construct_com_stmt_execute_packet = construct_com_stmt_execute_packet
+
 local function parse_binary_resultset_row_packet(column_defs, data)
     local res, pos = {}, 1
     pos = pos + 1 --packet_header:[00]
@@ -392,14 +431,16 @@ local function parse_binary_resultset_row_packet(column_defs, data)
     return res
 end
 
+_M.parse_binary_resultset_row_packet = parse_binary_resultset_row_packet
+
 local function compute_token(password, scramble)
     if password == "" then
         return ""
     end
 
-    local stage1 = sha1(password)
-    local stage2 = sha1(stage1)
-    local stage3 = sha1(scramble .. stage2)
+    local stage1 = sha1.binary(password)
+    local stage2 = sha1.binary(stage1)
+    local stage3 = sha1.binary(scramble .. stage2)
     local n = #stage1
     local bytes = new_tab(n, 0)
     for i = 1, n do

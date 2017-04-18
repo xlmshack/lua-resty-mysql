@@ -1,26 +1,26 @@
-local bit = require "bit"
+local bit = require("bit")
 local sub = string.sub
-local tcp = ngx.socket.tcp
+--local tcp = ngx.socket.tcp
 local strbyte = string.byte
 local strchar = string.char
 local strfind = string.find
 local format = string.format
 local strrep = string.rep
-local null = ngx.null
+local null = 0xfb
 local band = bit.band
 local bxor = bit.bxor
 local bor = bit.bor
 local lshift = bit.lshift
 local rshift = bit.rshift
 local tohex = bit.tohex
-local sha1 = ngx.sha1_bin
+--local sha1 = ngx.sha1_bin
 local concat = table.concat
 local unpack = unpack
 local setmetatable = setmetatable
 local error = error
 local tonumber = tonumber
 
-local _M
+local _M = { _VERSION = '0.19' }
 
 local function byte1_to_integer(data, index)
     local a = strbyte(data, index, index)
@@ -41,7 +41,7 @@ local function byte3_to_integer(data, index)
     return bor(a, lshift(b, 8), lshift(c, 16)), index + 3
 end
 
-local _M.byte3_to_integer = byte3_to_integer
+_M.byte3_to_integer = byte3_to_integer
 
 local function byte4_to_integer(data, index)
     local a, b, c, d = strbyte(data, index, index + 3)
@@ -109,7 +109,7 @@ function _M.cstr_to_str(data, index)
         return nil, nil
     end
 
-    return sub(data, index, last), last + 1
+    return sub(data, index, last - 1), last + 1
 end
 
 function _M.str_to_cstr(data)
@@ -137,6 +137,8 @@ local function lenenc_to_integer(data, index)
     end
 end
 
+_M.lenenc_to_integer = lenenc_to_integer
+
 local function integer_to_lenenc(n)
     if n >=0 and n < 0xfb then
         return integer_to_byte1(n)
@@ -146,6 +148,7 @@ local function integer_to_lenenc(n)
         return integer_to_byte1(0xfd) .. integer_to_byte3(n)
     else--if n >= 0x1000000 and n < 0x10000000000000000 then --2^64
         return integer_to_byte1(0xfe) .. integer_to_byte8(n)
+    end
 end
 
 local function lenenc_str_to_str(data, index)
@@ -381,6 +384,7 @@ local MYSQL_TYPE_LONG_BLOB = 0xfb
 local MYSQL_TYPE_BLOB =  0xfc
 local MYSQL_TYPE_VAR_STRING = 0xfd
 local MYSQL_TYPE_STRING = 0xfe
+local MYSQL_TYPE_GEOMETRY = 0xff
 
 local ProtocolTextConverters = new_tab(0, 8)
 for i = 0x01, 0x05 do
@@ -395,6 +399,38 @@ ProtocolTextConverters[0xf6] = tonumber  -- newdecimal
 _M.ProtocolTextConverters = ProtocolTextConverters
 
 local ProtocolBinaryConverters = new_tab(2, 30)
+ProtocolBinaryConverters[MYSQL_TYPE_DECIMAL] = {}
+ProtocolBinaryConverters[MYSQL_TYPE_TINY] = {}
+ProtocolBinaryConverters[MYSQL_TYPE_SHORT] = {}
+ProtocolBinaryConverters[MYSQL_TYPE_LONG] = {}
+ProtocolBinaryConverters[MYSQL_TYPE_FLOAT] = {}
+ProtocolBinaryConverters[MYSQL_TYPE_DOUBLE] = {}
+ProtocolBinaryConverters[MYSQL_TYPE_NULL] = {}
+ProtocolBinaryConverters[MYSQL_TYPE_TIMESTAMP] = {}
+ProtocolBinaryConverters[MYSQL_TYPE_LONGLONG] = {}
+ProtocolBinaryConverters[MYSQL_TYPE_INT24] = {}
+ProtocolBinaryConverters[MYSQL_TYPE_DATE] = {}
+ProtocolBinaryConverters[MYSQL_TYPE_TIME] = {}
+ProtocolBinaryConverters[MYSQL_TYPE_DATETIME] = {}
+ProtocolBinaryConverters[MYSQL_TYPE_YEAR] = {}
+ProtocolBinaryConverters[MYSQL_TYPE_NEWDATE] = {}
+ProtocolBinaryConverters[MYSQL_TYPE_VARCHAR] = {}
+ProtocolBinaryConverters[MYSQL_TYPE_BIT] = {}
+ProtocolBinaryConverters[MYSQL_TYPE_TIMESTAMP2] = {}
+ProtocolBinaryConverters[MYSQL_TYPE_DATETIME2] = {}
+ProtocolBinaryConverters[MYSQL_TYPE_TIME2] = {}
+ProtocolBinaryConverters[MYSQL_TYPE_NEWDECIMAL] = {}
+ProtocolBinaryConverters[MYSQL_TYPE_ENUM] = {}
+ProtocolBinaryConverters[MYSQL_TYPE_SET] = {}
+ProtocolBinaryConverters[MYSQL_TYPE_TINY_BLOB] = {}
+ProtocolBinaryConverters[MYSQL_TYPE_MEDIUM_BLOB] = {}
+ProtocolBinaryConverters[MYSQL_TYPE_LONG_BLOB] = {}
+ProtocolBinaryConverters[MYSQL_TYPE_BLOB] = {}
+ProtocolBinaryConverters[MYSQL_TYPE_VAR_STRING] = {}
+ProtocolBinaryConverters[MYSQL_TYPE_STRING] = {}
+ProtocolBinaryConverters[MYSQL_TYPE_GEOMETRY] = {}
+
+
 --database to native
 ProtocolBinaryConverters[MYSQL_TYPE_DECIMAL][1] = lenenc_str_to_str
 ProtocolBinaryConverters[MYSQL_TYPE_TINY][1] = byte1_to_integer
