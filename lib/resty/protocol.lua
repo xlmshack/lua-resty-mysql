@@ -135,6 +135,12 @@ end
 
 _M.send_packet = send_packet
 
+local function reset_sequence_id(ctx)
+    ctx.sequence_id = -1
+end
+
+_M.reset_sequence_id = reset_sequence_id
+
 local function parse_err_packet(data)
     local pkt_header, pos = conv.byte1_to_integer(data, 1) --header:int<1>
     local error_code, pos = conv.byte2_to_integer(data, pos) --error_code:int<2>
@@ -308,6 +314,7 @@ local function parse_column_definition_packet(data)
     res.org_table, pos = conv.lenenc_str_to_str(data, pos)
     res.name, pos = conv.lenenc_str_to_str(data, pos)
     res.org_name, pos = conv.lenenc_str_to_str(data, pos)
+    res.next_length, pos = conv.lenenc_to_integer(data, pos)
     res.character_set, pos = conv.byte2_to_integer(data, pos)
     res.column_length, pos = conv.byte4_to_integer(data, pos)
     res.type, pos = conv.byte1_to_integer(data, pos)
@@ -376,8 +383,7 @@ local function construct_com_stmt_execute_packet(stmt, new_params)
 
     for i = 1, stmt.num_params do
         if not new_params[i]
-        or not new_params[i].data 
-        or new_params[i].data == null then
+        or not new_params[i].data then
             local byte_pos = (i - 1) / 8
             local bit_pos = (i - 1) % 8
             null_bitmap[byte_pos] = bor(null_bitmap[byte_pos], lshift(1, bit_pos))
@@ -386,17 +392,18 @@ local function construct_com_stmt_execute_packet(stmt, new_params)
 
     local null_bitmap_data = ''
     for k, v in pairs(null_bitmap) do
-        null_bitmap = null_bitmap .. conv.integer_to_byte1(v)
+        null_bitmap_data = null_bitmap_data .. conv.integer_to_byte1(v)
     end
 
     send_data = send_data .. null_bitmap_data
+
+    send_data = send_data .. conv.integer_to_byte1(1)
 
     local value_data = ''
     local type_data = ''
     for i = 1, stmt.num_params do
         if  new_params[i]
-        and new_params[i].data 
-        and new_params[i].data ~= null then
+        and new_params[i].data then
             type_data = type_data .. conv.integer_to_byte2(new_params[i].type)
             value_data = value_data .. conv.ProtocolBinaryConverters[new_params[i].type][2](new_params[i].data , 1)
         end
@@ -409,22 +416,23 @@ end
 
 _M.construct_com_stmt_execute_packet = construct_com_stmt_execute_packet
 
-local function parse_binary_resultset_row_packet(column_defs, data)
+local function parse_binary_resultset_row_packet(data, column_defs)
     local res, pos = {}, 1
     pos = pos + 1 --packet_header:[00]
     local num_columns = #column_defs
-    local null_bitmap_len = (num_columns + 7 + 2) / 8
+    local null_bitmap_len = math.modf((num_columns + 7 + 2) / 8)
+    print('null_bitmap_len=' .. null_bitmap_len)
     local null_bitmap = {}
     for i = 1, null_bitmap_len do
         null_bitmap[i], pos = conv.byte1_to_integer(data, pos)
     end
     for i = 1, num_columns do
-        local byte_pos = (i - 1 + 2) / 8
+        local byte_pos = math.modf((i - 1 + 2) / 8) + 1
         local bit_pos = (i - 1 + 2) % 8
         if band(null_bitmap[byte_pos], lshift(1, bit_pos)) > 0 then
             res[column_defs[i].name] = null
         else
-            res[column_defs[i].name] = conv.ProtocolBinaryConverters[column_defs[i].type][1](data, pos)
+            res[column_defs[i].name], pos = conv.ProtocolBinaryConverters[column_defs[i].type][1](data, pos)
         end
     end
 

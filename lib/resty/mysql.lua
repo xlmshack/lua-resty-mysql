@@ -19,7 +19,7 @@ local _preparedstatememt = { _VERSION = '0.16' }
 local myt = { __index = _mysql }
 local dbt = { __index = _database }
 local connt = { __index = _connection }
-local pstmt = { __index == _preparedstatememt }
+local pstmt = { __index = _preparedstatememt }
 
 local ok, new_tab = pcall(require, "table.new")
 if not ok then
@@ -192,7 +192,7 @@ end
 --execute a query from sql statement
 function _connection.execute(self, sql)
     local ctx = self
-    ctx.sequence_id = -1
+    prot.reset_sequence_id(ctx)
     local com_query_pkt = prot.construct_com_query_packet(sql)
     local sent_cnt, err = prot.send_packet(ctx, com_query_pkt)
     if not sent_cnt then
@@ -280,35 +280,44 @@ end
 --creates a PreparedStatement object for sending parameterized SQL statements to the database
 function _connection.prepareStatement(self, sql)
     local ctx = self
+    prot.reset_sequence_id(ctx)
     local com_stmt_prepare_pkt = prot.construct_com_stmt_prepare_packet(sql)
     local sent_cnt, err = prot.send_packet(ctx, com_stmt_prepare_pkt)
     if not sent_cnt then
         return nil, "failed to send com_stmt_prepare packet: " .. err
     end
     local pkt_type, pkt_data, err = prot.recv_packet(ctx)
+    --print('pkt_type: ' .. pkt_type)
     if pkt_type == 'ERR' then
         local err_res = prot.parse_err_packet(pkt_data)
+        _dump_dict(err_res)
         return nil, err_res.sql_state
     end
     local pstmt_def, err = prot.parse_com_stmt_prepare_ok_packet(pkt_data)
+    --_dump_dict(pstmt_def)
     local param_defs = {}
-    if stmt_def.num_params > 0 then
-        for i = 1, stmt_def.num_params do
+    if pstmt_def.num_params > 0 then
+        for i = 1, pstmt_def.num_params do
             local pkt_type, pkt_data, err = prot.recv_packet(ctx)
             local param_def = prot.parse_column_definition_packet(pkt_data)
             param_defs[i] = param_def
+            --_dump_dict(param_def)
         end
         local pkt_type, pkt_data, err = prot.recv_packet(ctx)
+        --print('pkt_type: ' .. pkt_type)
         --skip parsing EOF packet
     end
+
     local col_defs = {}
-    if stmt_def.num_columns > 0 then
-        for i = 1, stmt_def.num_columns do
+    if pstmt_def.num_columns > 0 then
+        for i = 1, pstmt_def.num_columns do
             local pkt_type, pkt_data, err = prot.recv_packet(ctx)
             local col_def = prot.parse_column_definition_packet(pkt_data)
             col_defs[i] = col_def
+            --_dump_dict(col_def)
         end
         local pkt_type, pkt_data, err = prot.recv_packet(ctx)
+        --print('pkt_type: ' .. pkt_type)
         --skip parsing EOF packet
     end
 
@@ -319,11 +328,100 @@ end
 
 --sets the designated parameter
 function _preparedstatememt.setParameter(self, index, param)
+    local ctx = self.ctx
+    local pstmt_def = self.pstmt_def
+    if not pstmt_def.param_actuals then
+        pstmt_def.param_actuals = {}
+    end
+
+    if not index or index < 1 or index > pstmt_def.num_params then
+        return false, 'index error'
+    end
+
+    if not param or not param.type then
+        return false, 'param error'
+    end
+
+    pstmt_def.param_actuals[index] = param
+
+    return true
 end
 
 --executes the SQL statement in this PreparedStatement object
 function _preparedstatememt.execute(self)
-    return {}
+    local ctx = self.ctx
+    local pstmt_def = self.pstmt_def
+
+    prot.reset_sequence_id(ctx)
+    local com_stmt_exec_pkt = prot.construct_com_stmt_execute_packet(pstmt_def, pstmt_def.param_actuals)
+    --_dump(com_stmt_exec_pkt)
+    local sent_cnt, err = prot.send_packet(ctx, com_stmt_exec_pkt)
+    if not sent_cnt then
+        return nil, "failed to send com_stmt_execute packet: " .. err
+    end
+
+    local result_set = {}
+    result_set.table_set = {}
+    local table_index = 1
+    while(true)
+    do
+        local pkt_type, pkt_data, err = prot.recv_packet(ctx)
+        if not pkt_type then
+            return nil, err
+        elseif pkt_type == 'ERR' then
+            local err_res = prot.parse_err_packet(pkt_data)
+            return nil, err_res.sql_state
+        elseif pkt_type == 'OK' then
+            local ok_res = prot.parse_ok_packet(pkt_data)
+            return ok_res
+        elseif pkt_type ~= 'DATA' then
+            return nil, err
+        end
+
+        local req_type = band(ctx.client_capability_flags, prot.CLIENT_DEPRECATE_EOF) > 0 and 'OK' or 'EOF'
+        --local pkt_type, pkt_data, err = prot.recv_packet(ctx)
+        --skip parsing OK or EOF packet
+        --print('req_type=' .. req_type)
+        local col_cnt = prot.parse_column_count_packet(pkt_data)
+        --print('col_cnt=' .. col_cnt)
+        local col_defs = {}
+        for i = 1, col_cnt do
+            local pkt_type, pkt_data, err = prot.recv_packet(ctx)
+            --print('pkt_type: ' .. pkt_type)
+            --_dump(pkt_data)
+            local col_def = prot.parse_column_definition_packet(pkt_data)
+            --_dump_dict(col_def)
+            table.insert(col_defs, col_def)
+        end
+        --If the CLIENT_DEPRECATE_EOF client capability flag is not set, EOF_Packet
+        if req_type == 'EOF' then
+            local pkt_type, pkt_data, err = prot.recv_packet(ctx)
+            --print('pkt_type: ' .. pkt_type)
+            --_dump(pkt_data)
+            --skip parsing OK or EOF packet
+        end
+        result_set.table_set[table_index] = {}
+        local row_index = 1
+        while(true)
+        do
+            local pkt_type, pkt_data, err = prot.recv_packet(ctx)
+            --print('_pkt_type: ' .. pkt_type)
+            --_dump(pkt_data)
+            if pkt_type == 'ERR' then
+                local err_res = prot.parse_err_packet(pkt_data)
+                return nil, err_res.sql_state
+            elseif pkt_type == 'EOF' then
+                local ok_res = prot.parse_eof_packet(pkt_data)
+                --another ProtocolText::Resultset will follow
+                return result_set
+            elseif pkt_type == 'DATA' or pkt_type == 'OK' then
+                local row = prot.parse_binary_resultset_row_packet(pkt_data, col_defs)
+                result_set.table_set[table_index][row_index] = row
+                row_index = row_index + 1
+            end
+        end
+    end
+    return result_set
 end
 
 return _mysql
