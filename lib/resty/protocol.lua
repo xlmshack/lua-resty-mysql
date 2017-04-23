@@ -1,12 +1,14 @@
 local bit = require("bit")
 local sha1 = require("sha1")
+local math = require("math")
+local conv = require('conversion')
+
 local sub = string.sub
 local strbyte = string.byte
 local strchar = string.char
 local strfind = string.find
 local format = string.format
 local strrep = string.rep
-local null = 0xfb
 local band = bit.band
 local bxor = bit.bxor
 local bor = bit.bor
@@ -19,7 +21,6 @@ local unpack = unpack
 local setmetatable = setmetatable
 local error = error
 local tonumber = tonumber
-local conv = require('conversion')
 
 local _M = { _VERSION = '0.19' }
 
@@ -59,6 +60,8 @@ _M.SERVER_MORE_RESULTS_EXISTS = SERVER_MORE_RESULTS_EXISTS
 local COM_QUERY = 0x03
 local COM_STMT_PREPARE = 0x16
 local COM_STMT_EXECUTE = 0x17
+local COM_STMT_CLOSE = 0x19
+local COM_STMT_RESET = 0x1a
 
 local CURSOR_TYPE_NO_CURSOR = 0x00
 
@@ -327,15 +330,17 @@ end
 
 _M.parse_column_definition_packet = parse_column_definition_packet
 
-local function parse_resultset_row_packet(data, column_set)
+local function parse_resultset_row_packet(data, column_defs)
     local res, pos, i = {}, 1, 1
     local field_value = ''
-    for k,v in pairs(column_set) do
+    for k,v in pairs(column_defs) do
         field_value, pos = conv.lenenc_str_to_str(data, pos)
-        if conv.ProtocolTextConverters[column_set[i].type] then
-            res[column_set[i].name] = conv.ProtocolTextConverters[column_set[i].type](field_value)
+        if not field_value then
+            res[column_defs[i].name] = nil
+        elseif conv.ProtocolTextConverters[column_defs[i].type] then
+            res[column_defs[i].name] = conv.ProtocolTextConverters[column_defs[i].type](field_value)
         else
-            res[column_set[i].name] = field_value
+            res[column_defs[i].name] = field_value
         end
         i = i + 1
     end
@@ -383,8 +388,8 @@ local function construct_com_stmt_execute_packet(stmt, new_params)
 
     for i = 1, stmt.num_params do
         if not new_params[i]
-        or not new_params[i].data then
-            local byte_pos = (i - 1) / 8
+        or not new_params[i].bin_data then
+            local byte_pos = math.modf((i - 1) / 8) + 1
             local bit_pos = (i - 1) % 8
             null_bitmap[byte_pos] = bor(null_bitmap[byte_pos], lshift(1, bit_pos))
         end
@@ -403,9 +408,9 @@ local function construct_com_stmt_execute_packet(stmt, new_params)
     local type_data = ''
     for i = 1, stmt.num_params do
         if  new_params[i]
-        and new_params[i].data then
-            type_data = type_data .. conv.integer_to_byte2(new_params[i].type)
-            value_data = value_data .. conv.ProtocolBinaryConverters[new_params[i].type][2](new_params[i].data , 1)
+        and new_params[i].bin_data then
+            type_data = type_data .. conv.integer_to_byte2(new_params[i].bin_type)
+            value_data = value_data .. new_params[i].bin_data
         end
     end
 
@@ -421,7 +426,7 @@ local function parse_binary_resultset_row_packet(data, column_defs)
     pos = pos + 1 --packet_header:[00]
     local num_columns = #column_defs
     local null_bitmap_len = math.modf((num_columns + 7 + 2) / 8)
-    print('null_bitmap_len=' .. null_bitmap_len)
+    --print('null_bitmap_len=' .. null_bitmap_len)
     local null_bitmap = {}
     for i = 1, null_bitmap_len do
         null_bitmap[i], pos = conv.byte1_to_integer(data, pos)
@@ -430,7 +435,7 @@ local function parse_binary_resultset_row_packet(data, column_defs)
         local byte_pos = math.modf((i - 1 + 2) / 8) + 1
         local bit_pos = (i - 1 + 2) % 8
         if band(null_bitmap[byte_pos], lshift(1, bit_pos)) > 0 then
-            res[column_defs[i].name] = null
+            res[column_defs[i].name] = nil
         else
             res[column_defs[i].name], pos = conv.ProtocolBinaryConverters[column_defs[i].type][1](data, pos)
         end
@@ -440,6 +445,24 @@ local function parse_binary_resultset_row_packet(data, column_defs)
 end
 
 _M.parse_binary_resultset_row_packet = parse_binary_resultset_row_packet
+
+local function construct_com_stmt_close_packet(stmt)
+    local send_data = conv.integer_to_byte1(COM_STMT_CLOSE)
+    send_data = send_data .. conv.integer_to_byte4(stmt.statement_id)
+
+    return send_data
+end
+
+_M.construct_com_stmt_close_packet = construct_com_stmt_close_packet
+
+local function construct_com_stmt_reset_packet(stmt)
+    local send_data = conv.integer_to_byte1(COM_STMT_RESET)
+    send_data = send_data .. conv.integer_to_byte4(stmt.statement_id)
+
+    return send_data
+end
+
+_M.construct_com_stmt_reset_packet = construct_com_stmt_reset_packet
 
 local function compute_token(password, scramble)
     if password == "" then

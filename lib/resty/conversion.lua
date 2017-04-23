@@ -1,4 +1,5 @@
 local bit = require("bit")
+
 local sub = string.sub
 --local tcp = ngx.socket.tcp
 local strbyte = string.byte
@@ -6,7 +7,6 @@ local strchar = string.char
 local strfind = string.find
 local format = string.format
 local strrep = string.rep
-local null = 0xfb
 local band = bit.band
 local bxor = bit.bxor
 local bor = bit.bor
@@ -21,6 +21,11 @@ local error = error
 local tonumber = tonumber
 
 local _M = { _VERSION = '0.19' }
+
+local ok, new_tab = pcall(require, "table.new")
+if not ok then
+    new_tab = function (narr, nrec) return {} end
+end
 
 local function byte1_to_integer(data, index)
     local a = strbyte(data, index, index)
@@ -90,6 +95,7 @@ end
 
 _M.integer_to_byte4 = integer_to_byte4
 
+--not supported int64
 local function integer_to_byte8(n)
     return strchar(band(n, 0xff),
                    band(rshift(n, 8), 0xff),
@@ -125,7 +131,7 @@ local function lenenc_to_integer(data, index)
     if first >= 0 and first < 0xfb then
         return first, new_index
     elseif first == 0xfb then --EOF
-        return null, new_index
+        return nil, new_index
     elseif first == 0xfc then --2-byte integer
         return byte2_to_integer(data, new_index)
     elseif first == 0xfd then --3-byte integer
@@ -153,8 +159,8 @@ end
 
 local function lenenc_str_to_str(data, index)
     local data_length, new_index = lenenc_to_integer(data, index)
-    if data_length == nil or data_length == null then
-        return null, new_index
+    if data_length == nil then
+        return nil, new_index
     end
 
     return sub(data, new_index, new_index + data_length - 1), new_index + data_length
@@ -233,15 +239,15 @@ local function byte8_to_double(data)
     return nil
 end
 
-local function datetime_to_str(data, index)
+local function datetime_to_str(data, index, compact)
     local data_length, new_index = byte1_to_integer(data, index)
     if data_length == 0 then
-        return '0000-00-00 00:00:00', new_index
+        return (compact and '0000-00-00' or '0000-00-00 00:00:00'), new_index
     elseif data_length == 4 then
         local _year, new_index = byte2_to_integer(data, new_index)
         local _month, new_index = byte1_to_integer(data, new_index)
         local _day, new_index = byte1_to_integer(data, new_index)
-        local datetime_str = format('%4d-%02d-%02d', _year, _month, _day)
+        local datetime_str = format((compact and '%04d-%02d-%02d' or '%04d-%02d-%02d 00:00:00'), _year, _month, _day)
         return datetime_str, new_index
     elseif data_length == 7 then
         local _year, new_index = byte2_to_integer(data, new_index)
@@ -250,7 +256,7 @@ local function datetime_to_str(data, index)
         local _hour, new_index = byte1_to_integer(data, new_index)
         local _minute, new_index = byte1_to_integer(data, new_index)
         local _second, new_index = byte1_to_integer(data, new_index)
-        local datetime_str = format('%4d-%02d-%02d %02d:%02d:%02d', _year, _month, _day, _hour, _minute, _second)
+        local datetime_str = format('%04d-%02d-%02d %02d:%02d:%02d', _year, _month, _day, _hour, _minute, _second)
         return datetime_str, new_index
     elseif data_length == 11 then
         local _year, new_index = byte2_to_integer(data, new_index)
@@ -261,6 +267,10 @@ local function datetime_to_str(data, index)
         local _second, new_index = byte1_to_integer(data, new_index)
         local _microsec, new_index = byte4_to_integer(data, new_index)
         local datetime_str = format('%4d-%02d-%02d %02d:%02d:%02d', _year, _month, _day, _hour, _minute, _second)
+        if _microsec > 0 then
+        	local microsec_str = format('%06d', _microsec)
+    		datetime_str = datetime_str .. '.' .. sub(microsec_str, -6, -4) .. ' ' .. sub(microsec_str, -3, -1)
+        end
         return datetime_str, new_index
     else
         return nil
@@ -268,42 +278,88 @@ local function datetime_to_str(data, index)
 end
 
 local function str_to_datetime(data)
-    local data_length = #data
-    if data == '0000-00-00 00:00:00' then
-        return integer_to_byte1(0)
-    end
+	local datetime_pattern_full  = '0000-00-00 00:00:00.000 000'
+    local datetime_pattern_part2 = '0000-00-00 00:00:00'
+	local datetime_pattern_part1 = '0000-00-00'
+	
 
-    if data_length == #'2010-10-17 19:27:30' then
-        local _year = tonumber(sub(data, 1, 4))
-        local _month = tonumber(sub(data, 6, 7))
-        local _day = tonumber(sub(data, 9, 10))
-        local _hour = tonumber(sub(data, 12, 13))
-        local _minute = tonumber(sub(data, 15, 16))
-        local _second = tonumber(sub(data, 18, 19))
-        return integer_to_byte1(7)
+    --match pattern
+	local datetime_pattern = nil
+	if #data == #datetime_pattern_full then
+		datetime_pattern = datetime_pattern_full
+	elseif #data == #datetime_pattern_part2 then
+		datetime_pattern = datetime_pattern_part2
+		data = data .. '.000 000' 
+	elseif #data == #datetime_pattern_part1 then
+        datetime_pattern = datetime_pattern_part1
+        data = data .. ' 00:00:00.000 000' 
+    else
+		return nil, 'datetime format error 1'
+	end
+
+    --check format
+	for i = 1, #datetime_pattern do
+		local pattern_char = sub(datetime_pattern, i, i)
+		local target_char = sub(data, i, i)
+		if pattern_char == '0' then
+			if strbyte(target_char) < strbyte('0') 
+			or strbyte(target_char) > strbyte('9') then
+				return nil, 'datetime format error 2'
+			end
+		else
+			if pattern_char ~= target_char then
+				return nil, 'datetime format error 3'
+            end
+		end
+	end
+
+    local _year = tonumber(sub(data, 1, 4))
+    local _month = tonumber(sub(data, 6, 7))
+    local _day = tonumber(sub(data, 9, 10))
+    local _hour = tonumber(sub(data, 12, 13))
+    local _minute = tonumber(sub(data, 15, 16))
+    local _second = tonumber(sub(data, 18, 19))
+    local _microsec = tonumber(sub(data, 21, 23) .. sub(data, 25, 27))
+
+    if _microsec == 0 then
+        if _hour == 0 and _minute == 0 and _second == 0 then
+            if _year == 0 and _month == 0 and _day == 0 then
+                return integer_to_byte1(0)
+            else
+                return integer_to_byte1(4)
+                    .. integer_to_byte2(_year)
+                    .. integer_to_byte1(_month)
+                    .. integer_to_byte1(_day)
+            end
+        else
+            return integer_to_byte1(7)
+                .. integer_to_byte2(_year)
+                .. integer_to_byte1(_month)
+                .. integer_to_byte1(_day)
+                .. integer_to_byte1(_hour)
+                .. integer_to_byte1(_minute)
+                .. integer_to_byte1(_second)
+        end
+    else
+        return integer_to_byte1(11)
             .. integer_to_byte2(_year)
             .. integer_to_byte1(_month)
             .. integer_to_byte1(_day)
             .. integer_to_byte1(_hour)
             .. integer_to_byte1(_minute)
-            .. integer_to_byte1(_second)
-    elseif data_length == #'2010-10-17' then
-        local _year = tonumber(sub(data, 1, 4))
-        local _month = tonumber(sub(data, 6, 7))
-        local _day = tonumber(sub(data, 9, 10))
-        return integer_to_byte1(4)
-            .. integer_to_byte2(_year)
-            .. integer_to_byte1(_month)
-            .. integer_to_byte1(_day)
-    else
-        return nil
+            .. integer_to_byte1(_second) 
+            .. integer_to_byte4(_microsec)
     end
+end
+
+local function date_to_str(data, index)
+    return datetime_to_str(data, index, true)
 end
 
 local function time_to_str(data, index)
     local data_length, new_index = byte1_to_integer(data, index)
     if data_length == 0 then
-        return '0d 00:00:00', new_index
+        return '00:00:00', new_index
     elseif data_length == 8 then
         local _is_negative, new_index = byte1_to_integer(data, new_index)
         local _day, new_index = byte4_to_integer(data, new_index)
@@ -311,6 +367,12 @@ local function time_to_str(data, index)
         local _minute, new_index = byte1_to_integer(data, new_index)
         local _second, new_index = byte1_to_integer(data, new_index)
         local time_str = format('%02d:%02d:%02d', _hour, _minute, _second)
+        if _day > 0 then
+            time_str = format('%dd ', _day) .. time_str
+        end
+        if _is_negative ~= 0 then
+            time_str = '-' .. time_str
+        end
         return time_str, new_index
     elseif data_length == 12 then
         local _is_negative, new_index = byte1_to_integer(data, new_index)
@@ -320,6 +382,16 @@ local function time_to_str(data, index)
         local _second, new_index = byte1_to_integer(data, new_index)
         local _microsec, new_index = byte4_to_integer(data, new_index)
         local time_str = format('%02d:%02d:%02d', _hour, _minute, _second)
+        if _day > 0 then
+            time_str = format('%dd ', _day) .. time_str
+        end
+        if _is_negative ~= 0 then
+            time_str = '-' .. time_str
+        end
+        if _microsec > 0 then
+            local microsec_str = format('%06d', _microsec)
+            time_str = time_str .. '.' .. sub(microsec_str, -6, -4) .. ' ' .. sub(microsec_str, -3, -1)
+        end
         return time_str, new_index
     else
         return nil
@@ -327,31 +399,76 @@ local function time_to_str(data, index)
 end
 
 local function str_to_time(data)
-    local data_length = #data
-    if data == '00:00:00' then
-        return integer_to_byte1(0)
-    elseif data_length == #'00:00:00' then
-        local _is_negative = 0
-        local _day = 0
-        local _hour = tonumber(sub(data, 1, 2))
-        local _minute = tonumber(sub(data, 4, 5))
-        local _second = tonumber(sub(data, 7, 8))
+    local time_pattern_after_day_full = '00:00:00.000 000'
+    local time_pattern_after_day_part = '00:00:00'
 
-        return integer_to_byte1(8)
+    local pos_data = 1
+
+    local _is_negative = 0
+    if sub(data, 1, 1) == '-' then
+        _is_negative = 1
+        pos_data = pos_data + 1
+    end
+
+    local _day = 0
+    local pos_day = strfind(data, 'd ', pos_data)
+    if pos_day then
+        _day = tonumber(sub(data, pos_data, pos_day - 1))
+        pos_data = pos_day + 2
+    end
+
+    --match pattern
+    local time_pattern = nil
+    if #sub(data, pos_data, -1) == #time_pattern_after_day_part then
+        time_pattern = time_pattern_after_day_part
+        data = data .. '.000 000'
+    elseif #sub(data, pos_data, -1) == #time_pattern_after_day_full then
+        time_pattern = time_pattern_after_day_full
+    else
+        return nil, 'time format error 1'
+    end
+
+    --check format
+    for i = 1, #time_pattern do
+        local pattern_char = sub(time_pattern, i, i)
+        local target_char = sub(data, pos_data + i - 1, pos_data + i - 1)
+        if pattern_char == '0' then
+            if strbyte(target_char) < strbyte('0') 
+            or strbyte(target_char) > strbyte('9') then
+                return nil, 'time format error 2'
+            end
+        else
+            if pattern_char ~= target_char then
+                return nil, 'time format error 3'
+            end
+        end
+    end
+
+    local _hour = tonumber(sub(data, pos_data, pos_data + 1))
+    local _minute = tonumber(sub(data, pos_data + 3, pos_data + 4))
+    local _second = tonumber(sub(data, pos_data + 6, pos_data + 7))
+    local _microsec = tonumber(sub(data, pos_data + 9, pos_data + 11) .. sub(data, pos_data + 13, pos_data + 15))
+
+    if _microsec == 0 then
+        if _day == 0 and _hour == 0 and _minute == 0 and _second == 0 then
+            return integer_to_byte1(0)
+        else
+            return integer_to_byte1(8)
+                .. integer_to_byte1(_is_negative)
+                .. integer_to_byte4(_day)
+                .. integer_to_byte1(_hour)
+                .. integer_to_byte1(_minute)
+                .. integer_to_byte1(_second)
+        end
+    else
+        return integer_to_byte1(12)
             .. integer_to_byte1(_is_negative)
             .. integer_to_byte4(_day)
             .. integer_to_byte1(_hour)
             .. integer_to_byte1(_minute)
-            .. integer_to_byte1(_second)
-    else
-        return nil
+            .. integer_to_byte1(_second) 
+            .. integer_to_byte4(_microsec)
     end
-end
-
-
-local ok, new_tab = pcall(require, "table.new")
-if not ok then
-    new_tab = function (narr, nrec) return {} end
 end
 
 --column types
@@ -422,14 +539,14 @@ for i = 0x01, 0x05 do
     -- tiny, short, long, float, double
     ProtocolTextConverters[i] = tonumber
 end
--- converters[0x08] = tonumber  -- long long
-ProtocolTextConverters[0x09] = tonumber  -- int24
-ProtocolTextConverters[0x0d] = tonumber  -- year
-ProtocolTextConverters[0xf6] = tonumber  -- newdecimal
+ProtocolTextConverters[MYSQL_TYPE_LONGLONG] = tonumber  -- long long
+ProtocolTextConverters[MYSQL_TYPE_INT24] = tonumber  -- int24
+ProtocolTextConverters[MYSQL_TYPE_YEAR] = tonumber  -- year
+ProtocolTextConverters[MYSQL_TYPE_NEWDECIMAL] = tonumber  -- newdecimal
 
 _M.ProtocolTextConverters = ProtocolTextConverters
 
-local ProtocolBinaryConverters = new_tab(2, 30)
+local ProtocolBinaryConverters = new_tab(1, 30)
 ProtocolBinaryConverters[MYSQL_TYPE_DECIMAL] = {}
 ProtocolBinaryConverters[MYSQL_TYPE_TINY] = {}
 ProtocolBinaryConverters[MYSQL_TYPE_SHORT] = {}
@@ -473,7 +590,7 @@ ProtocolBinaryConverters[MYSQL_TYPE_NULL][1] = nil
 ProtocolBinaryConverters[MYSQL_TYPE_TIMESTAMP][1] = datetime_to_str
 ProtocolBinaryConverters[MYSQL_TYPE_LONGLONG][1] = byte8_to_integer
 ProtocolBinaryConverters[MYSQL_TYPE_INT24][1] = byte4_to_integer
-ProtocolBinaryConverters[MYSQL_TYPE_DATE][1] = datetime_to_str
+ProtocolBinaryConverters[MYSQL_TYPE_DATE][1] = date_to_str
 ProtocolBinaryConverters[MYSQL_TYPE_TIME][1] = time_to_str
 ProtocolBinaryConverters[MYSQL_TYPE_DATETIME][1] = datetime_to_str
 ProtocolBinaryConverters[MYSQL_TYPE_YEAR][1] = byte2_to_integer

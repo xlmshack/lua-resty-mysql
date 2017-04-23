@@ -1,6 +1,7 @@
 -- Copyright (C) 2012 Yichun Zhang (agentzh)
 
 local prot = require("protocol")
+local conv = require('conversion')
 local socket = require("socket.core")
 local bit = require("bit")
 
@@ -290,7 +291,7 @@ function _connection.prepareStatement(self, sql)
     --print('pkt_type: ' .. pkt_type)
     if pkt_type == 'ERR' then
         local err_res = prot.parse_err_packet(pkt_data)
-        _dump_dict(err_res)
+        --_dump_dict(err_res)
         return nil, err_res.sql_state
     end
     local pstmt_def, err = prot.parse_com_stmt_prepare_ok_packet(pkt_data)
@@ -342,7 +343,24 @@ function _preparedstatememt.setParameter(self, index, param)
         return false, 'param error'
     end
 
-    pstmt_def.param_actuals[index] = param
+    if param.data then
+        local bin_data = conv.ProtocolBinaryConverters[param.type][2](param.data , 1)
+        if not bin_data then
+            return false, 'param error'
+        end
+        --print('bin_data:')
+        --_dump(bin_data)
+
+        local param_actual = {}
+        param_actual.bin_type = param.type
+        param_actual.bin_data = bin_data
+        pstmt_def.param_actuals[index] = param_actual
+    else
+        local param_actual = {}
+        param_actual.bin_type = param.type
+        param_actual.bin_data = nil
+        pstmt_def.param_actuals[index] = param_actual
+    end
 
     return true
 end
@@ -422,6 +440,49 @@ function _preparedstatememt.execute(self)
         end
     end
     return result_set
+end
+
+--resets a prepared statement 
+function _preparedstatememt.reset(self)
+    local ctx = self.ctx
+    local pstmt_def = self.pstmt_def
+
+    prot.reset_sequence_id(ctx)
+    local com_stmt_reset_pkt = prot.construct_com_stmt_reset_packet(pstmt_def)
+    --_dump(com_stmt_exec_pkt)
+    local sent_cnt, err = prot.send_packet(ctx, com_stmt_reset_pkt)
+    if not sent_cnt then
+        return nil, "failed to send com_stmt_reset packet: " .. err
+    end
+
+    return true
+end
+
+--deallocates a prepared statement in server
+function _preparedstatememt.close(self)
+    local ctx = self.ctx
+    local pstmt_def = self.pstmt_def
+
+    prot.reset_sequence_id(ctx)
+    local com_stmt_close_pkt = prot.construct_com_stmt_close_packet(pstmt_def)
+    --_dump(com_stmt_exec_pkt)
+    local sent_cnt, err = prot.send_packet(ctx, com_stmt_close_pkt)
+    if not sent_cnt then
+        return nil, "failed to send com_stmt_close packet: " .. err
+    end
+
+    local pkt_type, pkt_data, err = prot.recv_packet(ctx)
+    if not pkt_type then
+        return nil, err
+    elseif pkt_type == 'ERR' then
+        local err_res = prot.parse_err_packet(pkt_data)
+        return nil, err_res.sql_state
+    elseif pkt_type == 'OK' then
+        local ok_res = prot.parse_ok_packet(pkt_data)
+        return ok_res
+    else
+        return nil, 'other error'
+    end
 end
 
 return _mysql

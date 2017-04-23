@@ -1,5 +1,29 @@
 local mysql = require('mysql')
 local conv = require('conversion')
+local bit = require("bit")
+
+local strbyte = string.byte
+local concat = table.concat
+local tohex = bit.tohex
+local band = bit.band
+local bxor = bit.bxor
+local bor = bit.bor
+
+local ok, new_tab = pcall(require, "table.new")
+if not ok then
+    new_tab = function (narr, nrec) return {} end
+end
+
+local function _dump(data, isprint)
+    local len = #data
+    local bytes = new_tab(len, 0)
+    for i = 1, len do
+        bytes[i] = tohex(strbyte(data, i), 2)
+    end
+    if not isprint then print(concat(bytes, " ")) end
+    return (concat(bytes, " "))
+end
+
 
 local database = mysql:new()
 if not database then
@@ -13,7 +37,7 @@ option.max_packet_size = 1024*1024
 option.user = 'liqikun'
 option.password = '123q'
 option.pool = 'pool1'
-option.host = '192.168.3.9'
+option.host = '192.168.1.122'
 option.port = 3306
 option.database = 'resty'
 --option.ssl_verify = true
@@ -24,11 +48,55 @@ else
   print('connect to mysql server successful')
 end
 
--- local resultset, err = connection:execute('select * from test; select * from test')
+local resultset, err = connection:execute('select * from user')
+if not resultset then
+  print(err)
+else
+  print('execute sql statement successful')
+end
+
+for k,v in pairs(resultset.table_set) do
+  for kk,vv in pairs(v) do
+    -- for kkk,vvv in pairs(vv) do
+    --   print('field=' .. kkk .. ' value=' .. vvv .. ' type=' .. type(vvv))
+    -- end
+    print('iduser=' .. (vv['iduser'] or 'null'))
+    print('username=' .. (vv['username'] or 'null'))
+    print('ctime=' .. (vv['ctime'] or 'null'))
+    print('utime=' .. (vv['utime'] or 'null'))
+    print('rtime=' .. (vv['rtime'] or 'null'))
+    print('--------------------------------------')
+  end
+end
+
+-- local pstmt, err = connection:prepareStatement('select * from user where iduser between ? and ? ')
+-- if not pstmt then
+--   print(err)
+-- else
+--   print('prepare statememt successful')
+-- end
+
+-- local param = { type = conv.MYSQL_TYPE_LONGLONG, data = 0}
+-- if not pstmt:setParameter(1, param) then
+--   print('set param error 1')
+-- end
+-- local param = { type = conv.MYSQL_TYPE_LONGLONG, data = 6}
+-- if not pstmt:setParameter(2, param) then
+--   print('set param error 2')
+-- end
+-- local param = { type = conv.MYSQL_TYPE_DATETIME, data = '0000-00-00 00:00:00'}
+-- if not pstmt:setParameter(3, param) then
+--   print('set param error 3')
+-- end
+-- local param = { type = conv.MYSQL_TYPE_DATE, data = '0001-01-01'}
+-- if not pstmt:setParameter(4, param) then
+--   print('set param error 4')
+-- end
+-- local resultset, err = pstmt:execute()
 -- if not resultset then
 --   print(err)
 -- else
---   print('execute sql statement successful')
+--   print('execute prepare statement successful')
 -- end
 
 -- for k,v in pairs(resultset.table_set) do
@@ -39,33 +107,11 @@ end
 --   end
 -- end
 
-local pstmt, err = connection:prepareStatement('select * from test where id = ? or name = ?  ')
-if not pstmt then
-  print(err)
-else
-  print('prepare statememt successful')
-end
+-- local bin_data, err = conv.ProtocolBinaryConverters[conv.MYSQL_TYPE_TIME][2](
+--   '-0d 19:27:30.000 001' , 1)
 
-local param = { type = conv.MYSQL_TYPE_LONGLONG, data = 3}
-if not pstmt:setParameter(1, param) then
-  print('set param error 1')
-end
-local param = { type = conv.MYSQL_TYPE_VAR_STRING, data = 'c'}
-if not pstmt:setParameter(2, param) then
-  print('set param error 2')
-end
-
-local resultset, err = pstmt:execute()
-if not resultset then
-  print(err)
-else
-  print('execute prepare statement successful')
-end
-
-for k,v in pairs(resultset.table_set) do
-  for kk,vv in pairs(v) do
-    for kkk,vvv in pairs(vv) do
-      print('field=' .. kkk .. ' value=' .. vvv)
-    end
-  end
-end
+-- if bin_data then
+--   print('bin_data=' .. _dump(bin_data))
+-- else
+--   print('err=' .. err)
+-- end
