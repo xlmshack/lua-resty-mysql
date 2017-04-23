@@ -27,6 +27,15 @@ if not ok then
     new_tab = function (narr, nrec) return {} end
 end
 
+local function _dump(data)
+    local len = #data
+    local bytes = new_tab(len, 0)
+    for i = 1, len do
+        bytes[i] = tohex(strbyte(data, i), 2)
+    end
+    return concat(bytes, " ")
+end
+
 local function byte1_to_integer(data, index)
     local a = strbyte(data, index, index)
     return a, index + 1
@@ -239,15 +248,20 @@ local function byte8_to_double(data)
     return nil
 end
 
-local function datetime_to_str(data, index, compact)
+local function datetime_to_str(data, index, decimals, compact)
+    local decimals_str = ''
+    if decimals and decimals > 0 then
+        decimals_str = '.' .. strrep('0', decimals)
+    end
     local data_length, new_index = byte1_to_integer(data, index)
+    print(_dump(sub(data, index, index + data_length)))
     if data_length == 0 then
-        return (compact and '0000-00-00' or '0000-00-00 00:00:00'), new_index
+        return (compact and '0000-00-00' or ('0000-00-00 00:00:00' .. decimals_str)), new_index
     elseif data_length == 4 then
         local _year, new_index = byte2_to_integer(data, new_index)
         local _month, new_index = byte1_to_integer(data, new_index)
         local _day, new_index = byte1_to_integer(data, new_index)
-        local datetime_str = format((compact and '%04d-%02d-%02d' or '%04d-%02d-%02d 00:00:00'), _year, _month, _day)
+        local datetime_str = format((compact and '%04d-%02d-%02d' or ('%04d-%02d-%02d 00:00:00' .. decimals_str)), _year, _month, _day)
         return datetime_str, new_index
     elseif data_length == 7 then
         local _year, new_index = byte2_to_integer(data, new_index)
@@ -256,7 +270,7 @@ local function datetime_to_str(data, index, compact)
         local _hour, new_index = byte1_to_integer(data, new_index)
         local _minute, new_index = byte1_to_integer(data, new_index)
         local _second, new_index = byte1_to_integer(data, new_index)
-        local datetime_str = format('%04d-%02d-%02d %02d:%02d:%02d', _year, _month, _day, _hour, _minute, _second)
+        local datetime_str = format(('%04d-%02d-%02d %02d:%02d:%02d' .. decimals_str), _year, _month, _day, _hour, _minute, _second)
         return datetime_str, new_index
     elseif data_length == 11 then
         local _year, new_index = byte2_to_integer(data, new_index)
@@ -267,32 +281,34 @@ local function datetime_to_str(data, index, compact)
         local _second, new_index = byte1_to_integer(data, new_index)
         local _microsec, new_index = byte4_to_integer(data, new_index)
         local datetime_str = format('%4d-%02d-%02d %02d:%02d:%02d', _year, _month, _day, _hour, _minute, _second)
-        if _microsec > 0 then
-        	local microsec_str = format('%06d', _microsec)
-    		datetime_str = datetime_str .. '.' .. sub(microsec_str, -6, -4) .. ' ' .. sub(microsec_str, -3, -1)
+        if decimals and decimals > 0 then
+            print('decimals=' .. decimals)
+            print('_microsec=' .. _microsec)
+            local microsec_str = format(('%06d'), _microsec) -- the max decimal is 6
+            datetime_str = datetime_str .. '.' .. sub(microsec_str, 1, decimals)
         end
+        
         return datetime_str, new_index
     else
         return nil
     end
 end
 
-local function str_to_datetime(data)
-	local datetime_pattern_full  = '0000-00-00 00:00:00.000 000'
-    local datetime_pattern_part2 = '0000-00-00 00:00:00'
+local function str_to_datetime(data, decimals)
+	local datetime_pattern_full  = '0000-00-00 00:00:00'
 	local datetime_pattern_part1 = '0000-00-00'
 	
+    decimals = decimals and decimals or 0
+    if decimals > 6 or decimals < 0 then
+        return nil, 'datetime decimal error'
+    end
 
     --match pattern
 	local datetime_pattern = nil
-	if #data == #datetime_pattern_full then
+	if #data >= #datetime_pattern_full then
 		datetime_pattern = datetime_pattern_full
-	elseif #data == #datetime_pattern_part2 then
-		datetime_pattern = datetime_pattern_part2
-		data = data .. '.000 000' 
 	elseif #data == #datetime_pattern_part1 then
         datetime_pattern = datetime_pattern_part1
-        data = data .. ' 00:00:00.000 000' 
     else
 		return nil, 'datetime format error 1'
 	end
@@ -319,7 +335,24 @@ local function str_to_datetime(data)
     local _hour = tonumber(sub(data, 12, 13))
     local _minute = tonumber(sub(data, 15, 16))
     local _second = tonumber(sub(data, 18, 19))
-    local _microsec = tonumber(sub(data, 21, 23) .. sub(data, 25, 27))
+    local _microsec = 0
+
+    local decimals_str = sub(data, #datetime_pattern_full + 1)
+    if decimals > 0 and #decimals_str > 0 then
+        
+        if sub(decimals_str, 1, 1) ~= '.' then
+            return nil, 'datetime format error 4'
+        end
+
+        decimals_str = sub(decimals_str, 2, decimals + 2 - 1)
+        print('decimals_str=' .. decimals_str)
+        if #decimals_str < 6 then
+            decimals_str = decimals_str .. strrep('0', 6 - #decimals_str)
+        end
+
+        _microsec = tonumber(decimals_str)
+        print('_microsec=' .. _microsec)
+    end
 
     if _microsec == 0 then
         if _hour == 0 and _minute == 0 and _second == 0 then
@@ -353,7 +386,7 @@ local function str_to_datetime(data)
 end
 
 local function date_to_str(data, index)
-    return datetime_to_str(data, index, true)
+    return datetime_to_str(data, index, 0, true)
 end
 
 local function time_to_str(data, index)
@@ -390,7 +423,7 @@ local function time_to_str(data, index)
         end
         if _microsec > 0 then
             local microsec_str = format('%06d', _microsec)
-            time_str = time_str .. '.' .. sub(microsec_str, -6, -4) .. ' ' .. sub(microsec_str, -3, -1)
+            time_str = time_str .. '.' .. sub(microsec_str, -6, -1)
         end
         return time_str, new_index
     else
@@ -399,7 +432,7 @@ local function time_to_str(data, index)
 end
 
 local function str_to_time(data)
-    local time_pattern_after_day_full = '00:00:00.000 000'
+    local time_pattern_after_day_full = '00:00:00.000000'
     local time_pattern_after_day_part = '00:00:00'
 
     local pos_data = 1
@@ -421,7 +454,7 @@ local function str_to_time(data)
     local time_pattern = nil
     if #sub(data, pos_data, -1) == #time_pattern_after_day_part then
         time_pattern = time_pattern_after_day_part
-        data = data .. '.000 000'
+        data = data .. '.000000'
     elseif #sub(data, pos_data, -1) == #time_pattern_after_day_full then
         time_pattern = time_pattern_after_day_full
     else

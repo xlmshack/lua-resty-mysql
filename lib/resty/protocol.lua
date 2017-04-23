@@ -437,7 +437,7 @@ local function parse_binary_resultset_row_packet(data, column_defs)
         if band(null_bitmap[byte_pos], lshift(1, bit_pos)) > 0 then
             res[column_defs[i].name] = nil
         else
-            res[column_defs[i].name], pos = conv.ProtocolBinaryConverters[column_defs[i].type][1](data, pos)
+            res[column_defs[i].name], pos = conv.ProtocolBinaryConverters[column_defs[i].type][1](data, pos, column_defs[i].decimals)
         end
     end
 
