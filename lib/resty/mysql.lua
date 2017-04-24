@@ -408,7 +408,7 @@ function _preparedstatememt.execute(self)
             --print('pkt_type: ' .. pkt_type)
             --_dump(pkt_data)
             local col_def = prot.parse_column_definition_packet(pkt_data)
-            _dump_dict(col_def)
+            --_dump_dict(col_def)
             table.insert(col_defs, col_def)
         end
         --If the CLIENT_DEPRECATE_EOF client capability flag is not set, EOF_Packet

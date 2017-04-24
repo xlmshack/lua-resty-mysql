@@ -254,7 +254,7 @@ local function datetime_to_str(data, index, decimals, compact)
         decimals_str = '.' .. strrep('0', decimals)
     end
     local data_length, new_index = byte1_to_integer(data, index)
-    print(_dump(sub(data, index, index + data_length)))
+    --print(_dump(sub(data, index, index + data_length)))
     if data_length == 0 then
         return (compact and '0000-00-00' or ('0000-00-00 00:00:00' .. decimals_str)), new_index
     elseif data_length == 4 then
@@ -282,8 +282,8 @@ local function datetime_to_str(data, index, decimals, compact)
         local _microsec, new_index = byte4_to_integer(data, new_index)
         local datetime_str = format('%4d-%02d-%02d %02d:%02d:%02d', _year, _month, _day, _hour, _minute, _second)
         if decimals and decimals > 0 then
-            print('decimals=' .. decimals)
-            print('_microsec=' .. _microsec)
+            --print('decimals=' .. decimals)
+            --print('_microsec=' .. _microsec)
             local microsec_str = format(('%06d'), _microsec) -- the max decimal is 6
             datetime_str = datetime_str .. '.' .. sub(microsec_str, 1, decimals)
         end
@@ -337,7 +337,7 @@ local function str_to_datetime(data, decimals)
     local _second = tonumber(sub(data, 18, 19))
     local _microsec = 0
 
-    local decimals_str = sub(data, #datetime_pattern_full + 1)
+    local decimals_str = sub(data, 20)
     if decimals > 0 and #decimals_str > 0 then
         
         if sub(decimals_str, 1, 1) ~= '.' then
@@ -345,13 +345,13 @@ local function str_to_datetime(data, decimals)
         end
 
         decimals_str = sub(decimals_str, 2, decimals + 2 - 1)
-        print('decimals_str=' .. decimals_str)
+        --print('decimals_str=' .. decimals_str)
         if #decimals_str < 6 then
             decimals_str = decimals_str .. strrep('0', 6 - #decimals_str)
         end
 
         _microsec = tonumber(decimals_str)
-        print('_microsec=' .. _microsec)
+        --print('_microsec=' .. _microsec)
     end
 
     if _microsec == 0 then
@@ -389,17 +389,21 @@ local function date_to_str(data, index)
     return datetime_to_str(data, index, 0, true)
 end
 
-local function time_to_str(data, index)
+local function time_to_str(data, index, decimals)
+    local decimals_str = ''
+    if decimals and decimals > 0 then
+        decimals_str = '.' .. strrep('0', decimals)
+    end
     local data_length, new_index = byte1_to_integer(data, index)
     if data_length == 0 then
-        return '00:00:00', new_index
+        return ('00:00:00' .. decimals_str), new_index
     elseif data_length == 8 then
         local _is_negative, new_index = byte1_to_integer(data, new_index)
         local _day, new_index = byte4_to_integer(data, new_index)
         local _hour, new_index = byte1_to_integer(data, new_index)
         local _minute, new_index = byte1_to_integer(data, new_index)
         local _second, new_index = byte1_to_integer(data, new_index)
-        local time_str = format('%02d:%02d:%02d', _hour, _minute, _second)
+        local time_str = format(('%02d:%02d:%02d' .. decimals_str), _hour, _minute, _second)
         if _day > 0 then
             time_str = format('%dd ', _day) .. time_str
         end
@@ -421,9 +425,11 @@ local function time_to_str(data, index)
         if _is_negative ~= 0 then
             time_str = '-' .. time_str
         end
-        if _microsec > 0 then
-            local microsec_str = format('%06d', _microsec)
-            time_str = time_str .. '.' .. sub(microsec_str, -6, -1)
+        if decimals and decimals > 0 then
+            --print('decimals=' .. decimals)
+            --print('_microsec=' .. _microsec)
+            local microsec_str = format(('%06d'), _microsec) -- the max decimal is 6
+            time_str = time_str .. '.' .. sub(microsec_str, 1, decimals)
         end
         return time_str, new_index
     else
@@ -431,9 +437,8 @@ local function time_to_str(data, index)
     end
 end
 
-local function str_to_time(data)
-    local time_pattern_after_day_full = '00:00:00.000000'
-    local time_pattern_after_day_part = '00:00:00'
+local function str_to_time(data, decimals)
+    local time_pattern_after_day = '00:00:00'
 
     local pos_data = 1
 
@@ -450,20 +455,9 @@ local function str_to_time(data)
         pos_data = pos_day + 2
     end
 
-    --match pattern
-    local time_pattern = nil
-    if #sub(data, pos_data, -1) == #time_pattern_after_day_part then
-        time_pattern = time_pattern_after_day_part
-        data = data .. '.000000'
-    elseif #sub(data, pos_data, -1) == #time_pattern_after_day_full then
-        time_pattern = time_pattern_after_day_full
-    else
-        return nil, 'time format error 1'
-    end
-
     --check format
-    for i = 1, #time_pattern do
-        local pattern_char = sub(time_pattern, i, i)
+    for i = 1, #time_pattern_after_day do
+        local pattern_char = sub(time_pattern_after_day, i, i)
         local target_char = sub(data, pos_data + i - 1, pos_data + i - 1)
         if pattern_char == '0' then
             if strbyte(target_char) < strbyte('0') 
@@ -480,7 +474,24 @@ local function str_to_time(data)
     local _hour = tonumber(sub(data, pos_data, pos_data + 1))
     local _minute = tonumber(sub(data, pos_data + 3, pos_data + 4))
     local _second = tonumber(sub(data, pos_data + 6, pos_data + 7))
-    local _microsec = tonumber(sub(data, pos_data + 9, pos_data + 11) .. sub(data, pos_data + 13, pos_data + 15))
+    local _microsec = 0
+
+    local decimals_str = sub(data, pos_data + 8)
+    if decimals > 0 and #decimals_str > 0 then
+        
+        if sub(decimals_str, 1, 1) ~= '.' then
+            return nil, 'datetime format error 4'
+        end
+
+        decimals_str = sub(decimals_str, 2, decimals + 2 - 1)
+        --print('decimals_str=' .. decimals_str)
+        if #decimals_str < 6 then
+            decimals_str = decimals_str .. strrep('0', 6 - #decimals_str)
+        end
+
+        _microsec = tonumber(decimals_str)
+        --print('_microsec=' .. _microsec)
+    end
 
     if _microsec == 0 then
         if _day == 0 and _hour == 0 and _minute == 0 and _second == 0 then
